@@ -1,0 +1,123 @@
+# Binaries for programs and plugins
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Go build output
+/bin/
+/dist/
+*.test
+*.out
+/tmp/
+
+# Go test binary, built with `go test -c`
+*.test
+
+# Go coverage files
+*.coverprofile
+coverage.txt
+coverage.html
+*.cover
+
+# Go workspace file
+go.work
+
+# Dependency directories
+/vendor/
+
+# Environment files - IMPORTANT: Contains sensitive credentials
+.env
+.env.local
+.env.*.local
+*.env
+!.env.example
+
+# IDE and Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+*.iml
+
+# macOS specific
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon
+._*
+.DocumentRevisions-V100
+.fseventsd
+.Spotlight-V100
+.TemporaryItems
+.Trashes
+.VolumeIcon.icns
+.com.apple.timemachine.donotpresent
+.AppleDB
+.AppleDesktop
+
+# Windows specific
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Linux specific
+.directory
+.Trash-*
+
+# Log files
+*.log
+logs/
+log/
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+
+# Air live reload (if using)
+tmp/
+.air.toml.local
+
+# Docker volumes
+docker/volumes/
+
+# Certificates and keys
+*.pem
+*.key
+*.crt
+*.p12
+
+# Backup files
+*.bak
+*.backup
+*~
+
+# Compiled Object files
+*.o
+*.a
+
+# Debug files
+debug
+__debug_bin
+
+# Build artifacts
+/build/
+/dist/
+/release/
+
+# Generated files
+*.gen.go
+*_gen.go
+
+# Mock files (if not checked in)
+**/mocks/*.go
+
+# Temporary files
+temp/
+.tmp/
+
