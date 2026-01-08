@@ -9,27 +9,18 @@ import (
 	"gorm.io/gorm"
 )
 
-type PostgresDB struct {
-	db *gorm.DB
-}
-
-// GetDB returns the underlying GORM database instance
-func (p *PostgresDB) GetDB() *gorm.DB {
-	return p.db
-}
-
-// Close closes the database connection gracefully
-// Call this during application shutdown to properly release resources
-func (p *PostgresDB) Close() error {
-	sqlDB, err := p.db.DB()
-	if err != nil {
-		return fmt.Errorf("failed to get database instance: %w", err)
-	}
-	return sqlDB.Close()
-}
-
-// NewPostgresDB creates a new PostgreSQL database connection with connection pooling
-func NewPostgresDB(cfg config.DatabaseConfig) (*PostgresDB, error) {
+// NewConnection creates and returns a new PostgreSQL database connection using GORM.
+// It accepts a DatabaseConfig and returns a concrete *gorm.DB instance that can be
+// passed directly to repositories.
+//
+// Connection pooling is automatically handled by GORM/pgx with the following defaults:
+//   - MaxIdleConns: 10 (max idle connections in the pool)
+//   - MaxOpenConns: 100 (max open connections to the database)
+//   - ConnMaxLifetime: 1 hour (max time a connection can be reused)
+//
+// This function follows the Go pattern "Accept interfaces, return structs" by
+// returning the concrete *gorm.DB type, which repositories need for specific functionality.
+func NewConnection(cfg config.DatabaseConfig) (*gorm.DB, error) {
 	dsn := fmt.Sprintf(
 		"host=%s port=%s user=%s password=%s dbname=%s sslmode=disable",
 		cfg.Host, cfg.Port, cfg.User, cfg.Password, cfg.DBName,
@@ -51,5 +42,5 @@ func NewPostgresDB(cfg config.DatabaseConfig) (*PostgresDB, error) {
 	sqlDB.SetMaxOpenConns(100)          // Max open connections to the database
 	sqlDB.SetConnMaxLifetime(time.Hour) // Max time a connection can be reused
 
-	return &PostgresDB{db: db}, nil
+	return db, nil
 }
