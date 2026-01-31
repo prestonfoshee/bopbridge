@@ -1,0 +1,524 @@
+# Go Spotify API Setup Guide
+
+## Phase 1: Project Foundation
+
+### Step 1: Initialize Go Module
+
+**What:** Run `go mod init github.com/yourusername/bopbridge`
+
+**Why:**
+
+- Go modules are Go's dependency management system (introduced in Go 1.11)
+- This creates a `go.mod` file that tracks your dependencies and their versions
+- The module path (github.com/yourusername/bopbridge) becomes the import prefix for your packages
+- Other Go code can import your packages using this path
+- Think of it like `package.json` in Node.js or `requirements.txt` in Python, but more powerful
+
+### Step 2: Create Basic Project Structure
+
+**What:** Create directories: `cmd/api/`, `internal/`, `docker/`, `migrations/`
+
+**Why:**
+
+- **`cmd/`**: Contains application entry points (mains). Go convention for executable commands
+  - `cmd/api/main.go` keeps main separate from library code, allowing reusability
+- **`internal/`**: Special Go directory - code here cannot be imported by external projects
+  - Enforces encapsulation at the language level
+  - Everything in `internal/` is private to your project
+- **`docker/`**: Keeps containerization separate from application code
+- **`migrations/`**: Database schema versions tracked alongside code
+
+**Go Concept:** Go has strong opinions about project layout. Following conventions makes your code familiar to other Go developers.
+
+### Step 3: Create Environment Files
+
+**What:** Create `.env.example` with all required variables, and `.gitignore`
+
+**Why:**
+
+- Go doesn't have built-in env loading (unlike some frameworks)
+- We'll use `godotenv` package to load `.env` files
+- `.env.example` is a template (committed to git)
+- `.env` contains actual secrets (never committed)
+- Go applications often use environment variables for 12-factor app compliance
+
+## Phase 2: Install Core Dependencies
+
+### Step 4: Install Web Framework (Gin)
+
+**What:** `go get github.com/gin-gonic/gin`
+
+**Why:**
+
+- **Gin** is a high-performance HTTP web framework (like Express for Node.js)
+- Go's standard library `net/http` is powerful but verbose
+- Gin provides: routing, middleware, JSON binding, validation
+- `go get` downloads the package and adds it to `go.mod` automatically
+- Go will also create `go.sum` - cryptographic checksums for dependency verification
+
+**Go Concept:** Unlike npm where packages go to `node_modules/`, Go downloads packages to a shared cache (`$GOPATH/pkg/mod`), making them available to all projects.
+
+### Step 5: Install Configuration & Environment Packages
+
+**What:**
+
+```bash
+go get github.com/spf13/viper
+go get github.com/joho/godotenv
+```
+
+**Why:**
+
+- **Viper**: Comprehensive configuration management
+  - Reads from env vars, config files (JSON/YAML/TOML), command-line flags
+  - Provides type-safe config access
+  - Eliminates boilerplate for reading configuration
+- **godotenv**: Loads `.env` files into environment variables
+  - Simple, does one thing well (Unix philosophy)
+  - Development convenience (production should use real env vars)
+
+### Step 6: Install Database Packages
+
+**What:**
+
+```bash
+go get gorm.io/gorm
+go get gorm.io/driver/postgres
+go get github.com/golang-migrate/migrate/v4
+go get github.com/golang-migrate/migrate/v4/database/postgres
+go get github.com/golang-migrate/migrate/v4/source/file
+```
+
+**Why:**
+
+- **GORM**: ORM (Object-Relational Mapping) for Go
+  - Maps Go structs to database tables
+  - Provides migrations, associations, hooks
+  - Similar to SQLAlchemy (Python) or TypeORM (TypeScript)
+- **postgres driver**: GORM needs a database-specific driver
+  - Go's `database/sql` package is database-agnostic
+  - Drivers implement the interface for specific databases
+- **golang-migrate**: Professional-grade migration tool
+  - Up/down migrations for versioning database schema
+  - Can be used in CLI or embedded in application
+  - Critical for production deployments
+
+**Go Concept:** Go's interface system allows GORM to work with any database through driver packages.
+
+### Step 7: Install Spotify & OAuth Packages
+
+**What:**
+
+```bash
+go get github.com/zmb3/spotify/v2
+go get golang.org/x/oauth2
+```
+
+**Why:**
+
+- **zmb3/spotify**: Wrapper for Spotify Web API
+  - Handles API endpoints, request/response marshaling
+  - Type-safe Go structs for Spotify data
+  - Note the `/v2` - Go modules use semantic import versioning
+- **oauth2**: Official OAuth2 implementation from Go team (`golang.org/x/...` is official extended packages)
+  - Handles OAuth2 flow: authorization, token exchange, refresh
+  - Used by spotify package under the hood
+  - Provides token auto-refresh mechanism
+
+**Go Concept:** The `/v2` suffix in import paths indicates major version 2+ (semantic versioning for Go modules).
+
+### Step 8: Install Security Packages
+
+**What:**
+
+```bash
+go get github.com/golang-jwt/jwt/v5
+go get golang.org/x/crypto/bcrypt
+```
+
+**Why:**
+
+- **jwt**: Create and validate JSON Web Tokens
+  - For user session management after Spotify OAuth
+  - We store JWT in client, avoid server-side sessions
+  - Stateless authentication (scales horizontally)
+- **bcrypt**: Password hashing (if we add local accounts later)
+  - Part of official Go crypto extensions
+  - Slow by design (protects against brute force)
+  - Handles salt automatically
+
+### Step 9: Install Utilities
+
+**What:**
+
+```bash
+go get github.com/go-playground/validator/v10
+go get github.com/rs/zerolog
+```
+
+**Why:**
+
+- **validator**: Struct field validation using tags
+  - Validates request payloads automatically
+  - Uses Go struct tags: `json:"name" validate:"required,email"`
+  - Integrates seamlessly with Gin
+- **zerolog**: Structured logging (JSON logs)
+  - Zero-allocation logger (very fast)
+  - Structured logs are machine-parseable
+  - Better than `fmt.Println()` for production
+
+**Go Concept:** Struct tags are metadata attached to struct fields, used by reflection to control behavior (JSON marshaling, validation, ORM, etc.)
+
+## Phase 3: Configuration Setup
+
+### Step 10: Create Configuration Module (`internal/config/config.go`)
+
+**What:** Create a struct with all configuration fields and Viper loading logic
+
+**Why:**
+
+- Centralizes all config in one place
+- Type-safe access to configuration (compile-time checking)
+- Easy to test by passing mock config structs
+- Go pattern: structs over maps for type safety
+
+**Structure:**
+
+```go
+type Config struct {
+    Server   ServerConfig
+    Database DatabaseConfig
+    Spotify  SpotifyConfig
+    JWT      JWTConfig
+}
+```
+
+**Go Concept:** Go encourages composition - nest structs to create hierarchical config.
+
+### Step 11: Create Database Connection Module (`internal/database/postgres.go`)
+
+**What:** Function that takes config, returns GORM DB connection
+
+**Why:**
+
+- Separates database concern from business logic
+- Returns `*gorm.DB` which can be passed to repositories
+- Connection pooling handled automatically by GORM/pgx
+- Easy to mock for testing
+
+**Go Pattern:** "Accept interfaces, return structs" - we return concrete `*gorm.DB` here since we want specific functionality.
+
+## Phase 4: Data Models
+
+### Step 12: Create Models (`internal/models/`)
+
+**What:** Create `user.go`, `playlist.go`, `analysis.go` with GORM models
+
+**Why:**
+
+- **Models are structs** - Go's way of defining data structures
+- **GORM tags** define database schema: `gorm:"primaryKey;autoIncrement"`
+- **JSON tags** control API serialization: `json:"user_id"`
+- Models are reusable across layers (handler → service → repository)
+
+**Example:**
+
+```go
+type User struct {
+    ID           uint      `gorm:"primaryKey" json:"id"`
+    SpotifyID    string    `gorm:"unique;not null" json:"spotify_id"`
+    Email        string    `gorm:"unique" json:"email"`
+    DisplayName  string    `json:"display_name"`
+    AccessToken  string    `gorm:"type:text" json:"-"` // "-" = don't expose in JSON
+    RefreshToken string    `gorm:"type:text" json:"-"`
+    TokenExpiry  time.Time `json:"token_expiry"`
+    CreatedAt    time.Time `json:"created_at"`
+    UpdatedAt    time.Time `json:"updated_at"`
+}
+```
+
+**Go Concepts:**
+
+- Exported fields (capitalized) are public
+- Struct tags are metadata for tools
+- `json:"-"` prevents sensitive data exposure
+
+## Phase 5: Repository Pattern
+
+### Step 13: Create Repositories (`internal/repository/`)
+
+**What:** Create `user.go`, `playlist.go` with database access functions
+
+**Why:**
+
+- **Repository Pattern**: Abstracts database operations
+- All SQL/GORM code lives here, nowhere else
+- Easy to test by mocking repository interface
+- Business logic doesn't know about database details
+
+**Pattern:**
+
+```go
+type UserRepository interface {
+    Create(user *models.User) error
+    FindBySpotifyID(spotifyID string) (*models.User, error)
+    Update(user *models.User) error
+}
+
+type userRepository struct {
+    db *gorm.DB
+}
+
+func NewUserRepository(db *gorm.DB) UserRepository {
+    return &userRepository{db: db}
+}
+```
+
+**Go Concepts:**
+
+- Define interface (what), implement struct (how)
+- Constructor functions (`NewXxx`) are Go convention
+- Return interface, not concrete type (dependency inversion)
+
+## Phase 6: Service Layer
+
+### Step 14: Create Services (`internal/services/`)
+
+**What:** Create `spotify.go`, `analyzer.go`, `playlist_generator.go`
+
+**Why:**
+
+- **Business Logic Layer**: Where core functionality lives
+- Services orchestrate repositories and external APIs
+- Keep handlers thin (just HTTP concerns)
+- Services are testable in isolation
+
+**Example - Spotify Service:**
+
+- Wraps `zmb3/spotify` client
+- Handles token refresh before API calls
+- Implements retry logic
+- Returns domain models, not raw Spotify types
+
+**Go Pattern:** Services take dependencies via constructor (dependency injection)
+
+```go
+func NewSpotifyService(userRepo repository.UserRepository, config *config.Config) SpotifyService
+```
+
+## Phase 7: HTTP Layer
+
+### Step 15: Create Handlers (`internal/handlers/`)
+
+**What:** Create `auth.go`, `spotify.go`, `playlist.go`, `user.go`
+
+**Why:**
+
+- **Handlers = HTTP Controllers**
+- Handle HTTP-specific concerns: parsing requests, writing responses
+- Validate input, call services, format output
+- Thin layer - delegate to services
+
+**Go Pattern with Gin:**
+
+```go
+func (h *AuthHandler) LoginHandler(c *gin.Context) {
+    // c is Gin's context (request + response wrapper)
+    authURL := h.spotifyService.GetAuthURL(state)
+    c.Redirect(http.StatusTemporaryRedirect, authURL)
+}
+```
+
+**Go Concept:** Methods on structs (receiver functions) for handler grouping
+
+### Step 16: Create Middleware (`internal/middleware/`)
+
+**What:** Create `auth.go` (JWT validation), `logging.go`
+
+**Why:**
+
+- **Middleware = HTTP Interceptors**
+- Run before/after handlers
+- Authentication: validate JWT, add user to context
+- Logging: log request/response automatically
+
+**Gin Middleware Pattern:**
+
+```go
+func AuthMiddleware(jwtSecret string) gin.HandlerFunc {
+    return func(c *gin.Context) {
+        // Extract token, validate, set user in context
+        c.Set("user_id", userID)
+        c.Next() // Continue to next handler
+    }
+}
+```
+
+**Go Concept:** Functions returning functions (closures) for middleware with config
+
+## Phase 8: Utilities
+
+### Step 17: Create Utils (`internal/utils/`)
+
+**What:** Create `jwt.go` (token generation/validation), `response.go` (standard responses)
+
+**Why:**
+
+- **Shared helpers** used across layers
+- JWT: `GenerateToken()`, `ValidateToken()` - used by handlers and middleware
+- Response: Standard JSON format for success/error
+
+**Go Pattern:**
+
+```go
+type APIResponse struct {
+    Success bool        `json:"success"`
+    Data    interface{} `json:"data,omitempty"`
+    Error   string      `json:"error,omitempty"`
+}
+```
+
+**Go Concept:** `interface{}` is "any type" (similar to TypeScript's `any`)
+
+## Phase 9: Application Entry Point
+
+### Step 18: Create Main (`cmd/api/main.go`)
+
+**What:** Wire everything together, start HTTP server
+
+**Why:**
+
+- **Composition Root**: Where dependency injection happens
+- Initialize: config → database → repositories → services → handlers → router
+- Setup graceful shutdown (important for Go servers)
+
+**Flow:**
+
+```go
+func main() {
+    // 1. Load config
+    cfg := config.Load()
+    
+    // 2. Connect database
+    db := database.Connect(cfg.Database)
+    
+    // 3. Initialize repositories
+    userRepo := repository.NewUserRepository(db)
+    
+    // 4. Initialize services
+    spotifyService := services.NewSpotifyService(userRepo, cfg)
+    
+    // 5. Initialize handlers
+    authHandler := handlers.NewAuthHandler(spotifyService)
+    
+    // 6. Setup router
+    router := gin.Default()
+    router.GET("/api/v1/auth/login", authHandler.LoginHandler)
+    
+    // 7. Start server
+    router.Run(":8080")
+}
+```
+
+**Go Concept:** Go programs start in `main()` function in `main` package
+
+## Phase 10: Docker Setup
+
+### Step 19: Create Dockerfile (`docker/Dockerfile`)
+
+**What:** Multi-stage build: builder stage (compile Go) + runtime stage (run binary)
+
+**Why:**
+
+- **Multi-stage**: Keeps final image small
+  - Builder: Full Go toolchain (~800MB)
+  - Runtime: Just compiled binary + Alpine Linux (~20MB)
+- Go compiles to single static binary (no runtime dependencies)
+- Much smaller than Node.js/Python Docker images
+
+**Go Advantage:** Go's compiled binaries are self-contained, perfect for containers
+
+### Step 20: Create docker-compose.yml
+
+**What:** Define services: app, postgres, redis (optional), adminer (optional)
+
+**Why:**
+
+- **Local development environment** with one command
+- Services networked automatically
+- Postgres: persistent data storage
+- Redis: optional caching layer
+- Adminer: database GUI (helpful while learning)
+
+## Phase 11: Database Migrations
+
+### Step 21: Create Migration Files
+
+**What:** Create SQL files in `migrations/`: `000001_create_users_table.up.sql`, etc.
+
+**Why:**
+
+- **Version control for database schema**
+- `.up.sql`: Apply migration (create table)
+- `.down.sql`: Rollback migration (drop table)
+- Enables: team collaboration, deployment rollback, schema evolution
+
+**Go Pattern:** Migrations can be embedded in binary using Go 1.16+ `embed` package
+
+## Phase 12: Testing & Development Tools
+
+### Step 22: Create Makefile
+
+**What:** Common commands: `make dev`, `make test`, `make migrate-up`, etc.
+
+**Why:**
+
+- **Developer convenience** - standardized commands
+- `make dev`: runs Air (hot reload for Go)
+- `make test`: runs all tests
+- Common in Go projects (language-agnostic tool)
+
+### Step 23: Install Development Tools
+
+**What:**
+
+```bash
+go install github.com/cosmtrek/air@latest
+go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
+```
+
+**Why:**
+
+- **Air**: Hot reload for Go (like nodemon)
+  - Watches files, recompiles on change
+  - Speeds up development iteration
+- **golangci-lint**: Meta-linter (runs many linters)
+  - Catches bugs, enforces style
+  - Standard in Go community
+
+**Go Concept:** `go install` installs binaries to `$GOPATH/bin` (add to PATH)
+
+## Key Go Concepts Summary
+
+1. **Modules**: Dependency management via `go.mod`
+2. **Packages**: Code organization (directories are packages)
+3. **internal/**: Language-enforced private packages
+4. **Struct Tags**: Metadata for reflection-based tools
+5. **Interfaces**: Define behavior contracts
+6. **Receivers**: Methods on structs
+7. **Exported/Unexported**: Capitalization controls visibility
+8. **Goroutines**: Will use for parallel Spotify API calls (later)
+9. **Context**: Request-scoped values and cancellation
+10. **Error Handling**: Explicit error returns (no exceptions)
+
+## Next Steps After Setup
+
+Once basic structure is in place:
+
+1. Implement OAuth flow (auth handlers + Spotify service)
+2. Add middleware for protected routes
+3. Implement Spotify data fetching endpoints
+4. Build playlist generation algorithms
+5. Add comprehensive tests
+6. Implement token encryption for database storage
+7. Add rate limiting and cachingçç
