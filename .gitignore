@@ -121,3 +121,6 @@ __debug_bin
 temp/
 .tmp/
 
+# AI context and documentation
+.ai-context/
+
