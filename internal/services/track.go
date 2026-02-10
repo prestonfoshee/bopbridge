@@ -3,9 +3,12 @@ package services
 import (
 	"context"
 	"fmt"
+	"sync/atomic"
+	"time"
 
 	"github.com/prestonfoshee/bopbridge/internal/models"
 	"github.com/prestonfoshee/bopbridge/internal/repository"
+	"github.com/rs/zerolog/log"
 )
 
 // TrackService defines the interface for managing track data.
@@ -46,43 +49,84 @@ func NewTrackService(trackRepo repository.TrackRepository, spotifyService Spotif
 }
 
 // SyncLikedSongs fetches all liked songs from Spotify and stores them in the database.
+// Uses a pipelined approach: fetching and DB inserts happen concurrently for maximum speed.
 func (s *trackService) SyncLikedSongs(ctx context.Context, userID uint) (int, error) {
-	// Fetch all liked songs from Spotify
-	tracks, err := s.spotifyService.FetchAllLikedSongs(ctx, userID)
-	if err != nil {
-		return 0, fmt.Errorf("fetching liked songs from Spotify: %w", err)
-	}
+	startTime := time.Now()
+	log.Info().Uint("user_id", userID).Msg("Starting pipelined sync of liked songs from Spotify")
 
-	if len(tracks) == 0 {
-		return 0, nil
-	}
+	// Create buffered channel for streaming batches from Spotify to DB
+	// Buffer of 20 batches allows fetching to stay ahead of DB inserts
+	tracksChan := make(chan []models.Track, 20)
 
-	// Fetch audio features for all tracks
-	trackIDs := make([]string, len(tracks))
-	for i, track := range tracks {
-		trackIDs[i] = track.SpotifyTrackID
-	}
+	// Track counts atomically
+	var totalInserted int64
+	var insertErr error
+	insertDone := make(chan struct{})
 
-	features, err := s.spotifyService.FetchAudioFeatures(ctx, userID, trackIDs)
-	if err != nil {
-		// Don't fail the entire sync if audio features fail
-		// We can fetch them later with SyncAudioFeatures
-		fmt.Printf("Warning: failed to fetch audio features: %v\n", err)
-	} else {
-		// Attach audio features to tracks
-		for i := range tracks {
-			if feature, ok := features[tracks[i].SpotifyTrackID]; ok {
-				tracks[i].AudioFeatures = feature
+	// Start DB writer goroutine (consumer) - inserts batches as they arrive
+	go func() {
+		defer close(insertDone)
+		batchNum := 0
+
+		for batch := range tracksChan {
+			batchNum++
+			log.Debug().
+				Uint("user_id", userID).
+				Int("batch", batchNum).
+				Int("batch_size", len(batch)).
+				Msg("Inserting batch to database")
+
+			if err := s.trackRepo.BulkUpsert(ctx, batch); err != nil {
+				log.Error().
+					Err(err).
+					Uint("user_id", userID).
+					Int("batch", batchNum).
+					Msg("Failed to insert batch to database")
+				insertErr = fmt.Errorf("inserting batch %d: %w", batchNum, err)
+				// Continue draining channel to prevent deadlock
+				for range tracksChan {
+				}
+				return
 			}
+
+			atomic.AddInt64(&totalInserted, int64(len(batch)))
+			log.Debug().
+				Uint("user_id", userID).
+				Int("batch", batchNum).
+				Int64("total_inserted", atomic.LoadInt64(&totalInserted)).
+				Msg("Batch inserted successfully")
 		}
+	}()
+
+	// Start streaming fetch from Spotify (producer)
+	// This will send batches to tracksChan and close it when done
+	totalFetched, fetchErr := s.spotifyService.FetchLikedSongsStream(ctx, userID, tracksChan)
+
+	// Wait for DB writer to finish
+	<-insertDone
+
+	// Check for errors
+	if fetchErr != nil {
+		log.Error().Err(fetchErr).Uint("user_id", userID).Msg("Fetch from Spotify failed")
+		return int(atomic.LoadInt64(&totalInserted)), fmt.Errorf("fetching liked songs: %w", fetchErr)
+	}
+	if insertErr != nil {
+		log.Error().Err(insertErr).Uint("user_id", userID).Msg("Database insert failed")
+		return int(atomic.LoadInt64(&totalInserted)), fmt.Errorf("storing tracks: %w", insertErr)
 	}
 
-	// Bulk upsert all tracks into the database
-	if err := s.trackRepo.BulkUpsert(ctx, tracks); err != nil {
-		return 0, fmt.Errorf("storing tracks in database: %w", err)
-	}
+	duration := time.Since(startTime)
+	finalCount := int(atomic.LoadInt64(&totalInserted))
 
-	return len(tracks), nil
+	log.Info().
+		Uint("user_id", userID).
+		Int("fetched_count", totalFetched).
+		Int("inserted_count", finalCount).
+		Dur("total_duration", duration).
+		Float64("tracks_per_second", float64(finalCount)/duration.Seconds()).
+		Msg("Pipelined sync completed successfully")
+
+	return finalCount, nil
 }
 
 // GetUserTracks retrieves all tracks for a user from the database.

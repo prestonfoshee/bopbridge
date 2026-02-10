@@ -2,11 +2,13 @@ package handlers
 
 import (
 	"net/http"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/prestonfoshee/bopbridge/internal/middleware"
 	"github.com/prestonfoshee/bopbridge/internal/services"
 	"github.com/prestonfoshee/bopbridge/internal/utils"
+	"github.com/rs/zerolog/log"
 )
 
 // TrackHandler handles track-related HTTP requests.
@@ -26,18 +28,31 @@ func NewTrackHandler(trackService services.TrackService, analyzerService service
 // SyncTracksHandler syncs all liked songs from Spotify to the database.
 // POST /api/v1/tracks/sync
 func (h *TrackHandler) SyncTracksHandler(c *gin.Context) {
+	startTime := time.Now()
+	log.Info().Msg("SyncTracksHandler called")
+
 	userID, exists := middleware.GetUserID(c)
 	if !exists {
+		log.Warn().Msg("SyncTracksHandler: User ID not found in context")
 		utils.UnauthorizedResponse(c, "User ID not found")
 		return
 	}
 
+	log.Info().Uint("user_id", userID).Msg("Starting track sync for user")
+
 	// Sync liked songs from Spotify
 	count, err := h.trackService.SyncLikedSongs(c.Request.Context(), userID)
 	if err != nil {
+		log.Error().Err(err).Uint("user_id", userID).Dur("duration", time.Since(startTime)).Msg("Track sync failed")
 		utils.InternalErrorResponse(c, err)
 		return
 	}
+
+	log.Info().
+		Uint("user_id", userID).
+		Int("synced_count", count).
+		Dur("duration", time.Since(startTime)).
+		Msg("Track sync completed successfully")
 
 	utils.SuccessMessageResponse(c, http.StatusOK, "Tracks synced successfully", gin.H{
 		"synced_count": count,

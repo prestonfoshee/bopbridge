@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/prestonfoshee/bopbridge/internal/models"
+	"github.com/rs/zerolog/log"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -81,31 +82,70 @@ func (r *trackRepository) Create(ctx context.Context, track *models.Track) error
 // BulkUpsert inserts or updates multiple tracks in a single transaction.
 func (r *trackRepository) BulkUpsert(ctx context.Context, tracks []models.Track) error {
 	if len(tracks) == 0 {
+		log.Debug().Msg("BulkUpsert called with 0 tracks, nothing to do")
 		return nil // Nothing to do
 	}
 
-	// Use GORM's Clauses to handle ON CONFLICT (upsert)
-	// This will update all fields if a conflict occurs on user_id + spotify_track_id
-	result := r.db.WithContext(ctx).Clauses(clause.OnConflict{
-		Columns: []clause.Column{
-			{Name: "user_id"},
-			{Name: "spotify_track_id"},
-		},
-		DoUpdates: clause.AssignmentColumns([]string{
-			"name",
-			"artist_name",
-			"album_name",
-			"genres",
-			"audio_features",
-			"is_liked",
-			"added_at",
-			"updated_at",
-		}),
-	}).Create(&tracks)
+	log.Debug().Int("track_count", len(tracks)).Msg("Starting bulk upsert of tracks")
 
-	if result.Error != nil {
-		return fmt.Errorf("bulk upserting tracks: %w", result.Error)
+	// PostgreSQL has a limit of 65535 parameters per query.
+	// Each track has ~15 fields, so we can safely insert ~4000 tracks per batch.
+	// Using 500 to be safe and leave room for complex queries.
+	const batchSize = 500
+	totalRowsAffected := int64(0)
+
+	for i := 0; i < len(tracks); i += batchSize {
+		end := i + batchSize
+		if end > len(tracks) {
+			end = len(tracks)
+		}
+		batch := tracks[i:end]
+
+		log.Debug().
+			Int("batch_start", i).
+			Int("batch_end", end).
+			Int("batch_size", len(batch)).
+			Msg("Upserting batch of tracks")
+
+		// Use GORM's Clauses to handle ON CONFLICT (upsert)
+		// This will update all fields if a conflict occurs on user_id + spotify_track_id
+		result := r.db.WithContext(ctx).Clauses(clause.OnConflict{
+			Columns: []clause.Column{
+				{Name: "user_id"},
+				{Name: "spotify_track_id"},
+			},
+			DoUpdates: clause.AssignmentColumns([]string{
+				"name",
+				"artist_name",
+				"album_name",
+				"genres",
+				"audio_features",
+				"is_liked",
+				"added_at",
+				"updated_at",
+			}),
+		}).Create(&batch)
+
+		if result.Error != nil {
+			log.Error().
+				Err(result.Error).
+				Int("batch_start", i).
+				Int("batch_size", len(batch)).
+				Msg("Failed to upsert batch of tracks")
+			return fmt.Errorf("bulk upserting tracks (batch starting at %d): %w", i, result.Error)
+		}
+
+		totalRowsAffected += result.RowsAffected
+		log.Debug().
+			Int("batch_start", i).
+			Int64("rows_affected", result.RowsAffected).
+			Msg("Batch upsert completed")
 	}
+
+	log.Info().
+		Int("track_count", len(tracks)).
+		Int64("total_rows_affected", totalRowsAffected).
+		Msg("Bulk upsert completed successfully")
 
 	return nil
 }
